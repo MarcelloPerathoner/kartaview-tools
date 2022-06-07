@@ -94,7 +94,7 @@ class SequenceJob:
             logging.error(
                 f"Uploaded {self.uploaded} images with {self.errors} errors to sequence {sequence_id}"
             )
-        else:
+        if not self.errors or self.args.force_close:
             api.close_sequence(self.args, sequence_id)
             # mark all images as belonging to this closed sequence
             for gt in self.sequence:
@@ -123,6 +123,12 @@ def build_parser():
         action="store_true",
         help="dry run: do not upload any images",
     )
+
+    parser.add_argument(
+        "--force-close",
+        action="store_true",
+        help="close open sequence even with pending errors",
+    )
     return parser
 
 
@@ -136,16 +142,18 @@ def main():
     errors = 0
     sequences = collections.defaultdict(list)
 
-    for filename in args.images:
-        gt = kt.read_sidecar_file(filename)
+    for filename_or_glob in args.images:
+        for filename in kt.ffmpeg_glob(filename_or_glob):
+            logging.debug("Found image: %s" % filename)
+            gt = kt.read_sidecar_file(filename)
 
-        if "tmp_sequence_id" not in gt:
-            # this image has not been sequenced
-            continue
+            if "tmp_sequence_id" not in gt:
+                # this image has not been sequenced
+                continue
 
-        logging.debug("queued: %s", gt["filename"])
-        sequences[gt["tmp_sequence_id"]].append(gt)
-        queued += 1
+            logging.debug("queued: %s", gt["filename"])
+            sequences[gt["tmp_sequence_id"]].append(gt)
+            queued += 1
 
     with tqdm(
         total=queued,
@@ -170,7 +178,7 @@ def main():
                     logging.exception(e)
 
     if errors:
-        logging.error("There where {errors} errors reported.")
+        logging.error(f"There where {errors} errors reported.")
         logging.error("To resume uploading re-run the program with the same arguments.")
     else:
         logging.info("Done.")

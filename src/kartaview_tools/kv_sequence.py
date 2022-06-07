@@ -107,46 +107,48 @@ def main():  # noqa: C901
     kt.init_logging(args.verbose)
 
     if args.clean:
-        for image in args.images:
-            kt.delete_sidecar_file(image)
+        for filename_or_glob in args.images:
+            for filename in kt.ffmpeg_glob(filename_or_glob):
+                kt.delete_sidecar_file(filename)
         return
 
     args.camera_yaw = ((args.camera_yaw + 180) % 360) - 180  # -180..180
 
     geotags = []
-    for image in args.images:
-        logging.debug("Found image: %s" % image)
+    for filename_or_glob in args.images:
+        for filename in kt.ffmpeg_glob(filename_or_glob):
+            logging.debug("Found image: %s" % filename)
 
-        gt = kt.read_sidecar_file(image)
-        if "sequence_index" in gt:
-            del gt["sequence_index"]
-        if "tmp_sequence_id" in gt:
-            del gt["tmp_sequence_id"]
-        geotags.append(gt)
+            gt = kt.read_sidecar_file(filename)
+            if "sequence_index" in gt:
+                del gt["sequence_index"]
+            if "tmp_sequence_id" in gt:
+                del gt["tmp_sequence_id"]
+            geotags.append(gt)
 
-        try:
-            f = gpsfix.GPSFix()
-            exif = piexif.load(image)
-            f.from_exif(exif)
-
-            # direction
-            if f.track:
-                f.direction = gpsfix.direction(f.track) + args.camera_yaw
-
-            gt.update(f.to_dict())
-
-            gt["projection_yaw"] = args.camera_yaw
             try:
-                gt["deviceName"] = (
-                    exif["0th"][piexif.ImageIFD.Make].decode()
-                    + " "
-                    + exif["0th"][piexif.ImageIFD.Model].decode()
-                )
-            except KeyError:
-                pass
+                f = gpsfix.GPSFix()
+                exif = piexif.load(filename)
+                f.from_exif(exif)
 
-        except kt.KartaviewError as e:
-            logging.exception(e)
+                # direction
+                if f.track:
+                    f.direction = gpsfix.direction(f.track) + args.camera_yaw
+
+                gt.update(f.to_dict())
+
+                gt["projection_yaw"] = args.camera_yaw
+                try:
+                    gt["deviceName"] = (
+                        exif["0th"][piexif.ImageIFD.Make].decode()
+                        + " "
+                        + exif["0th"][piexif.ImageIFD.Model].decode()
+                    )
+                except KeyError:
+                    pass
+
+            except kt.KartaviewError as e:
+                logging.exception(e)
 
     logging.info(f"Found {len(geotags)} images")
 

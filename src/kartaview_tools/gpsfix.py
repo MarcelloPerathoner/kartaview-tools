@@ -168,7 +168,9 @@ class GPSFix:
             coord = float(s)
             minutes = coord % 100.0
             degrees = coord - minutes
-            return (degrees / 100.0 + minutes / 60.0) * 1 if s in ("N", "E") else -1
+            return (degrees / 100.0 + minutes / 60.0) * (
+                1 if sign in ("N", "E") else -1
+            )
 
         def fix_speed(speed: str) -> float:
             return float(speed) * 1.852  # knots -> kmh

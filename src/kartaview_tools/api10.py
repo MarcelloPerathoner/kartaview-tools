@@ -2,17 +2,16 @@
 
 import datetime
 import hashlib
-import io
 import json
 import logging
 import os
 from typing import Dict
 
-import piexif
 import requests
 
 import kartaview_tools as kt
-from kartaview_tools import Geotags
+from .gpsfix import Geotags
+
 
 API_ENDPOINT = "https://api.openstreetcam.org/"
 
@@ -20,9 +19,6 @@ SEQUENCE_ENDPOINT = API_ENDPOINT + "1.0/sequence/"
 PHOTO_ENDPOINT = API_ENDPOINT + "1.0/photo/"
 
 API_TIMEOUT = 60.0
-
-# FIXME: what if the program crashes after all pictures uploaded ok but just before close sequence.
-# There will be no pictures left to resume the sequence.
 
 
 def create_sequence(args, parameters: Dict[str, str]) -> int:
@@ -125,9 +121,7 @@ def close_sequence(args, sequence_id: int) -> None:
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         raise kt.SequenceClosingError(
-            "Server error while closing sequence {sequence_id}\n".format(
-                sequence_id=sequence_id
-            )
+            f"Server error while closing sequence {sequence_id}\n"
         ) from e
 
 
@@ -165,20 +159,7 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:  # noqa: 
     """
     filename = geotags["filename"]
 
-    # insert exif data into memory buffer
-    with open(filename, "rb") as fpin:
-        exif_dict = piexif.load(fpin.read())
-
-        fpout = io.BytesIO()
-        fpin.seek(0)
-        try:
-            piexif.insert(piexif.dump(exif_dict), fpin.read(), fpout)
-        except ValueError as e:
-            raise kt.ImageUploadError(
-                "{filename} in sequence {sequence_id} has invalid Exif data\n".format(
-                    filename=filename, sequence_id=sequence_id
-                )
-            ) from e
+    fpout = kt.open_and_patch(filename, geotags)
 
     # and upload the memory buffer
     parameters = {
@@ -224,18 +205,14 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:  # noqa: 
             PHOTO_ENDPOINT, data=parameters, files=files, timeout=API_TIMEOUT
         )
         geotags["status_code"] = r.status_code
-        r.raise_for_status()
         jso = r.json()
-        geotags["photo_id"] = jso["osv"]["photo"]["id"]
         if args.verbose:
             logging.debug(json.dumps(jso, ensure_ascii=False, indent=4))
+        r.raise_for_status()
+        geotags["photo_id"] = jso["osv"]["photo"]["id"]
     except (requests.exceptions.RequestException, KeyError) as e:
         raise kt.ImageUploadError(
-            """Server error while uploading {filename} in sequence {sequence_id}
-            Re-run the program to complete the sequence.
-            """.format(
-                filename=filename, sequence_id=sequence_id
-            )
+            f"Server error while uploading {filename} in sequence {sequence_id}."
         ) from e
 
     return geotags

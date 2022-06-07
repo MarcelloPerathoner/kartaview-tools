@@ -5,24 +5,26 @@ import cmath
 import collections
 import datetime
 import glob
+import io
 import json
 import logging
 import operator
 import os
 import re
 from typing import List, Dict, Any
+from typing import TextIO
 
 from geographiclib.geodesic import Geodesic
 import lxml.etree as etree
 from lxml.builder import ElementMaker
+import piexif
 import requests
-from typing import TextIO
 from urllib3.util.retry import Retry
 
 from . import catmull_rom as cr
 from . import gpsfix
 from . import mp4
-from .gpsfix import Geotags
+from .gpsfix import GPSFix, Geotags
 
 
 CONFIG_FILEPATH = os.getenv(
@@ -41,7 +43,7 @@ api.mount(
         max_retries=Retry(
             total=API_RETRIES,
             backoff_factor=1,
-            method_whitelist=["GET", "POST", "PUT", "DELETE"],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"],
             status_forcelist=[429, 500, 502, 503, 504],
         )
     ),
@@ -69,12 +71,13 @@ class SequenceClosingError(KartaviewError):
 class ImageFileInfo:
     """Represents one image file."""
 
-    def __init__(self, filename: str, frame_id: int) -> None:
+    def __init__(self, filename: str, flic_id: int, frame_id: int) -> None:
         """Initialize this."""
         self.filename = filename
+        self.flic_id = flic_id
         self.frame_id = frame_id
-        self.timestamp: datetime.datetime | None = None
-        """Interpolated timestamp."""
+        self.gpsfix = GPSFix()
+        """Interpolated GPS fix"""
 
 
 def interpolate_coords(fixes: List[mp4.GPSFixAtom], images: List[ImageFileInfo]):
@@ -94,43 +97,45 @@ def interpolate_coords(fixes: List[mp4.GPSFixAtom], images: List[ImageFileInfo])
     interpolated = 0
 
     for image in images:
-        assert image.timestamp
-        logging.debug(f"Processing {image.filename}")
+        logging.debug(
+            f"Interpolating coordinates of frame {image.frame_id} in video {image.flic_id}"
+        )
+
+        fix = image.gpsfix
+        timestamp = fix.timestamp
 
         try:
-            while not p[3] or image.timestamp > p[2].timestamp:
+            while len(p) < 4 or timestamp > p[2].timestamp:
                 p.append(next(fixes_iter))
-
-            i = gpsfix.GPSFix()
-            i.timestamp = image.timestamp
 
             # interpolate GPS position
             # need 4 fixes for catmull interpolation
-            if p[1].timestamp <= image.timestamp < p[2].timestamp:
-                if p[1].timestamp == image.timestamp:
-                    i.coord = p[2].coord
-                    i.track = p[2].track
-                    i.direction = p[2].direction
+            if p[1].timestamp <= timestamp < p[2].timestamp:
+                if p[1].timestamp == timestamp:
+                    fix.coord = p[2].coord
+                    fix.track = p[2].track
+                    fix.direction = p[2].direction
                 else:
                     elapsed = p[2].timestamp - p[1].timestamp
-                    t = (image.timestamp - p[1].timestamp) / elapsed
+                    t = (timestamp - p[1].timestamp) / elapsed
                     # interpolate GPS position
-                    i.coord = cr.ccatmull(
+                    fix.coord = cr.ccatmull(
                         t, p[0].coord, p[1].coord, p[2].coord, p[3].coord
                     )
                     # interpolate GPS track
                     if p[0].track and p[1].track and p[2].track and p[3].track:
-                        i.track = cr.ccatmull(
+                        fix.track = cr.ccatmull(
                             t, p[0].track, p[1].track, p[2].track, p[3].track
                         )
-                    if i.track:
-                        i.direction = (
-                            gpsfix.rad2deg(cmath.phase(i.track)) + args.camera_yaw
+                    if fix.track:
+                        fix.direction = (
+                            gpsfix.rad2deg(cmath.phase(fix.track)) + args.camera_yaw
                         )
                 interpolated += 1
         except StopIteration:
             pass
-        logging.info(f"Interpolated {interpolated} image positions")
+
+    logging.info(f"Interpolated {interpolated} image positions")
 
 
 def interpolate_track(fixes: List[mp4.GPSFixAtom]) -> None:
@@ -158,8 +163,7 @@ def interpolate_track(fixes: List[mp4.GPSFixAtom]) -> None:
             p[1].track = gpsfix.polar(kmh, gpsfix.deg2rad(head))
             interpolated += 1
 
-    if interpolated:
-        logging.info(f"Interpolated {interpolated} GPS headings")
+    logging.info(f"Interpolated {interpolated} GPS headings")
 
 
 def write_gpx(fp: TextIO, fixes: List[mp4.GPSFixAtom]) -> None:
@@ -302,6 +306,28 @@ def cut_sequences(
     print("Sequence of: %d images" % len(sequence))
     result.append(sequence)
     return result
+
+
+def open_and_patch(filename: str, geotags: Geotags) -> io.BytesIO:
+    """Open JPEG file and patch EXIF data in memory.
+
+    Return memory buffer of JPEG with patched EXIF data.
+    """
+    fpout = io.BytesIO()
+    # insert exif data into memory buffer
+    with open(filename, "rb") as fpin:
+        exif_dict = piexif.load(fpin.read())
+
+        f = GPSFix()
+        f.from_dict(geotags)
+        exif_dict.update(f.to_dict())
+
+        fpin.seek(0)
+        try:
+            piexif.insert(piexif.dump(exif_dict), fpin.read(), fpout)
+        except ValueError as e:
+            raise ImageUploadError(f"{filename} has invalid Exif data\n") from e
+    return fpout
 
 
 def distance(p0: complex, p1: complex) -> float:

@@ -122,8 +122,12 @@ class VideoFileInfo:
         """
         for image in images:
             frame: int = image.frame_id
+            logging.debug(
+                f"Interpolating timestamp of frame {frame} in video {image.flic_id}"
+            )
             prev_fix: int = self.frames[frame].fix_id
             next_fix: int = prev_fix + 1
+            fix = image.gpsfix
 
             # interpolate timestamp
             if 1 <= next_fix < self.fix_cnt:
@@ -131,15 +135,15 @@ class VideoFileInfo:
                 p1, p2 = self.fixes[next_fix - 1 : next_fix + 1]
 
                 if p2.frame_id == frame:
-                    image.timestamp = p2.timestamp
+                    fix.timestamp = p2.timestamp
                 t = (frame - p1.frame_id) / float(p2.frame_id - p1.frame_id)
 
                 if p1.timestamp and p2.timestamp:
-                    image.timestamp = p1.timestamp + t * (p2.timestamp - p1.timestamp)
+                    fix.timestamp = p1.timestamp + t * (p2.timestamp - p1.timestamp)
 
             # extrapolate timestamp
-            if not image.timestamp:
-                image.timestamp = self.start_time + datetime.timedelta(
+            if not fix.timestamp:
+                fix.timestamp = self.start_time + datetime.timedelta(
                     seconds=frame / self.frame_rate
                 )
 
@@ -255,6 +259,7 @@ def main():  # noqa: C901
 
     videos: List[VideoFileInfo] = []
     all_fixes: List[mp4.GPSFixAtom] = []
+    all_images: List[mp4.ImageFileInfo] = []
 
     for n, video in enumerate(args.videos):
         atoms = []
@@ -269,9 +274,9 @@ def main():  # noqa: C901
 
     # Throw invalid fixes out and sort for interpolation.  This is necessary because the video files
     # given to us may not be in cronological order.
-    sort_by_timestamp = operator.attrgetter("timestamp")
     all_fixes = sorted(
-        filter(operator.attrgetter("coord"), all_fixes), key=sort_by_timestamp
+        filter(operator.attrgetter("coord"), all_fixes),
+        key=operator.attrgetter("timestamp"),
     )
 
     # Optionally interpolate a heading for each fix
@@ -279,8 +284,9 @@ def main():  # noqa: C901
         kt.interpolate_track(all_fixes)
 
     if args.mpegs:
-        images: List[kt.ImageFileInfo] = {}
+        # NOTE: the mpegs arguments must be in the same order as the mp4 arguments
         for n, mpegs in enumerate(args.mpegs):
+            images: List[kt.ImageFileInfo] = []
             fileglobs = kt.to_glob(mpegs)
             regex = kt.to_regex(mpegs)
             logging.info(f"Processing files: {fileglobs}")
@@ -289,25 +295,30 @@ def main():  # noqa: C901
                 if m := re.match(regex, filename):
                     # frame according to filename + offset
                     frame = int(m.group(1)) + args.frame_offset
-                    image = kt.ImageFileInfo(filename, frame)
-                    images[frame] = image
+                    logging.debug(
+                        f"Processing file: {filename} Video: {n} Frame: {frame}"
+                    )
+                    image = kt.ImageFileInfo(filename, n, frame)
+                    images.append(image)
 
-            # the mp4 arguments must be in the same order as the ffmpeg arguments
             videos[n].interpolate_timestamps(images)
+            all_images.extend(images)
 
-        images = sorted(images, key=sort_by_timestamp)
+        all_images = sorted(all_images, key=operator.attrgetter("gpsfix.timestamp"))
 
         # Interpolate image coordinates
-        kt.interpolate_coords(all_fixes, images)
+        kt.interpolate_coords(all_fixes, all_images)
 
         # Patch the image files
-        for image in images:
+        for image in all_images:
+            logging.debug(f"Patching EXIF into file {image.filename}")
             exif = piexif.load(image.filename)
-            image.update_exif(exif)
+            image.gpsfix.update_exif(exif)
             exif["0th"][piexif.ImageIFD.Make] = "Vantrue"
             exif["0th"][piexif.ImageIFD.Model] = "OnDash X4S"
             piexif.insert(piexif.dump(exif), image.filename)
 
+        logging.info(f"Patched EXIF into {len(all_images)} files")
         return
 
     if args.gprmc:

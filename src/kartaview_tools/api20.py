@@ -1,85 +1,149 @@
 """The OpenStreetCam 2.0 API.  This is as yet *UNTESTED*."""
 
-import io
 import json
 import logging
 from typing import Dict
 
-import piexif
 import requests
 
-
 import kartaview_tools as kt
+from .gpsfix import Geotags
 
 
-API_ENDPOINT = "https://api.openstreetcam.org/2.0"
+API_ENDPOINT = "https://api.openstreetcam.org/2.0/"
 
-SEQUENCE_ENDPOINT = API_ENDPOINT + "/sequence/"
-PHOTO_ENDPOINT = API_ENDPOINT + "/photo/"
+SEQUENCE_ENDPOINT = API_ENDPOINT + "sequence/"
+PHOTO_ENDPOINT = API_ENDPOINT + "photo/"
 
 API_TIMEOUT = 60.0
 
 
-def create_sequence(args, parameters: Dict = {}):
-    """Create a new sequence on the server."""
+def create_sequence(args, parameters: Dict[str, str] = {}) -> int:
+    """Create a new sequence on the server.
+
+    typical_response = {
+        "status": {
+            "apiCode": 600,
+            "apiMessage": "The request has been processed without incidents",
+            "httpCode": 200,
+            "httpMessage": "Success"
+        },
+        "result": {
+            "data": {
+                "id": "1234567",
+                "userId": "4269",
+                "address": null,
+                "appVersion": null,
+                "blurBuild": "0",
+                "blurVersion": "v1",
+                "cameraParameters": null,
+                "clientTotal": null,
+                "countActivePhotos": "0",
+                "countMetadataPhotos": "0",
+                "countMetadataVideos": "0",
+                "countryCode": null,
+                "currentLat": "0.000000",
+                "currentLng": "0.000000",
+                "dateAdded": "2022-06-07 20:21:22",
+                "dateProcessed": null,
+                "deviceName": "Vantrue OnDash X4S",
+                "distance": null,
+                "hasRawData": "0",
+                "imageProcessingStatus": "NEW",
+                "isVideo": "0",
+                "matchStatus": "NEW",
+                "matched": null,
+                "metaDataFilename": null,
+                "metadataStatus": "NEW",
+                "nwLat": null,
+                "nwLng": null,
+                "obdInfo": null,
+                "orgCode": "CMNT",
+                "platformName": null,
+                "platformVersion": null,
+                "processingStatus": "NEW",
+                "quality": null,
+                "qualityStatus": "NEW",
+                "seLat": null,
+                "seLng": null,
+                "sequenceType": null,
+                "stateCode": null,
+                "status": "active",
+                "storage": null,
+                "uploadSource": null,
+                "uploadStatus": "UPLOADING"
+            }
+        }
+    }
+    """
+    headers = {"X-Auth-Token": kt.get_auth_token()}
+    if args.verbose:
+        logging.info("POST %s" % SEQUENCE_ENDPOINT)
+        logging.info("params: %s" % parameters)
+    if args.dry_run:
+        return 0
+
     try:
-        headers = {"X-Auth-Token": kt.get_auth_token()}
-        if args.dry_run:
-            if args.verbose:
-                logging.info("POST %s" % SEQUENCE_ENDPOINT)
-                logging.info("params: %s" % parameters)
-            return 0
-        else:
-            r = requests.post(
-                SEQUENCE_ENDPOINT, data=parameters, headers=headers, timeout=API_TIMEOUT
-            )
-            jso = r.json()
-            if args.verbose:
-                logging.info(json.dumps(jso, ensure_ascii=False, indent=4))
-            r.raise_for_status()
-            return jso["result"]["data"]["id"]
-    except requests.exceptions.RequestException as e:
-        raise kt.SequenceCreationError("server error while creating sequence\n") from e
+        r = requests.post(
+            SEQUENCE_ENDPOINT, data=parameters, headers=headers, timeout=API_TIMEOUT
+        )
+        jso = r.json()
+        if args.verbose:
+            logging.info(json.dumps(jso, ensure_ascii=False, indent=4))
+        r.raise_for_status()
+        return int(jso["result"]["data"]["id"])
+    except (requests.exceptions.RequestException, KeyError) as e:
+        raise kt.SequenceCreationError(
+            "Server error while creating a new sequence\n"
+        ) from e
 
 
-def close_sequence(args, sequence_id):
+def close_sequence(args, sequence_id: int) -> None:
     """Close a sequence on the server."""
-    if not args.dry_run:
-        headers = {"X-Auth-Token": kt.get_auth_token()}
-        requests.get(SEQUENCE_ENDPOINT + str(sequence_id) + "/finish", headers=headers)
+    headers = {"X-Auth-Token": kt.get_auth_token()}
+    url = SEQUENCE_ENDPOINT + str(sequence_id) + "/finish"
+    if args.verbose:
+        logging.debug("GET %s" % url)
+    if args.dry_run:
+        return
+    try:
+        r = requests.get(url, headers=headers)
+        if args.verbose:
+            jso = r.json()
+            logging.debug(json.dumps(jso, ensure_ascii=False, indent=4))
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise kt.SequenceClosingError(
+            f"Server error while closing sequence {sequence_id}\n"
+        ) from e
 
 
-def upload_image(args, sequence_id, geotags):
+def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:
     """Upload one image to the server."""
     filename = geotags["filename"]
+    fpout = kt.open_and_patch(filename, geotags)
 
-    with open(filename, "rb") as fpin:
-        exif_dict = piexif.load(fpin.read())
-
-        # insert exif data into memory buffer
-        fpout = io.BytesIO()
-        fpin.seek(0)
-        try:
-            piexif.insert(piexif.dump(exif_dict), fpin.read(), fpout)
-        except ValueError as e:
-            raise kt.ImageUploadError(
-                "{filename} has invalid Exif data\n".format(filename=filename)
-            ) from e
-
-    # and upload the memory buffer
     headers = {"X-Auth-Token": kt.get_auth_token()}
     parameters = {
         "sequenceId": sequence_id,
         "sequenceIndex": geotags["sequence_index"],
-        "coordinate": geotags["lat"] + "," + geotags["lon"],
-        "projectionYaw": ((args.camera_yaw + 180) % 360) - 180,  # -180..180
+        "coordinate": str(geotags["lat"]) + "," + str(geotags["lon"]),
         "shotDate": geotags["timestamp"],
-        "payload": fpout.read(),
     }
-    if "heading" in geotags:
-        parameters["heading"] = geotags["heading"]
-    if "accuracy" in geotags:
-        parameters["gpsAccuracy"] = geotags["accuracy"]
+
+    def setparam(a, b):
+        if v := geotags.get(a):
+            parameters[b] = v
+
+    setparam("projectionYaw", "projection_yaw")
+    setparam("heading", "heading")
+    setparam("gpsAccuracy", "accuracy")
+
+    if args.verbose:
+        logging.debug("POST %s" % PHOTO_ENDPOINT)
+        logging.debug("params: %s" % parameters)
+
+    parameters["payload"] = fpout.read()
 
     if args.dry_run:
         geotags["status_code"] = 666
@@ -90,11 +154,16 @@ def upload_image(args, sequence_id, geotags):
             PHOTO_ENDPOINT, headers=headers, data=parameters, timeout=API_TIMEOUT
         )
         geotags["status_code"] = r.status_code
-        geotags["date_added"] = r["data"]["dateAdded"]
+        jso = r.json()
+        if args.verbose:
+            logging.debug(json.dumps(jso, ensure_ascii=False, indent=4))
         r.raise_for_status()
-    except requests.exceptions.RequestException as e:
+        data = jso["result"]["data"]
+        geotags["photo_id"] = data["id"]
+        geotags["date_added"] = data["dateAdded"]
+    except (requests.exceptions.RequestException, KeyError) as e:
         raise kt.ImageUploadError(
-            "{filename} server error while uploading\n".format(filename=filename)
+            f"Server error while uploading {filename} in sequence {sequence_id}."
         ) from e
 
     return geotags
