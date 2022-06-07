@@ -1,0 +1,8 @@
+*~
+*.pyc
+pylintgraph.dot
+
+/dist/
+**/*.egg-info/
+.vscode/
+obsolete/
