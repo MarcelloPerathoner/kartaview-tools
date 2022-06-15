@@ -18,7 +18,7 @@ API_ENDPOINT = "https://api.openstreetcam.org/"
 SEQUENCE_ENDPOINT = API_ENDPOINT + "1.0/sequence/"
 PHOTO_ENDPOINT = API_ENDPOINT + "1.0/photo/"
 
-API_TIMEOUT = 60.0
+API_TIMEOUT = 120.0
 
 
 def create_sequence(args, parameters: Dict[str, str]) -> int:
@@ -210,9 +210,16 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:  # noqa: 
             logging.debug(json.dumps(jso, ensure_ascii=False, indent=4))
         r.raise_for_status()
         geotags["photo_id"] = jso["osv"]["photo"]["id"]
-    except (requests.exceptions.RequestException, KeyError) as e:
+    except Exception as e:
+        # catch (nearly) everything and transmogrify it into an ImageUploadError exception
+        status = jso["status"]
+        if status["apiCode"] == 660 and "duplicate" in status["apiMessage"]:
+            # Do not complain about duplicates.  They may happen if the api timed out
+            # and made us miss the answer, but the upload was accepted anyway.
+            geotags["status_code"] = 200
+            return geotags
         raise kt.ImageUploadError(
-            f"Server error while uploading {filename} in sequence {sequence_id}."
+            f"Server error while uploading {filename} in sequence {sequence_id}:\n{jso['status']['apiMessage']}"
         ) from e
 
     return geotags

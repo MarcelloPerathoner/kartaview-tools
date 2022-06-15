@@ -76,6 +76,7 @@ class SequenceJob:
                     futures.append(
                         executor.submit(api.upload_image, self.args, sequence_id, gt)
                     )
+                    logging.debug(f"queued: {gt['filename']} to sequence {sequence_id}")
             logging.info(
                 f"Uploading {len(futures)} images to sequence {sequence_id} ..."
             )
@@ -86,8 +87,9 @@ class SequenceJob:
                     self.uploaded += 1
                     self.args.pbar.update()
                 except kt.ImageUploadError as e:
+                    logging.error(e)
                     self.errors += 1
-                    logging.exception(e)
+                    # logging.exception(e)
 
         # cleanup
         if self.errors:
@@ -151,7 +153,6 @@ def main():
                 # this image has not been sequenced
                 continue
 
-            logging.debug("queued: %s", gt["filename"])
             sequences[gt["tmp_sequence_id"]].append(gt)
             queued += 1
 

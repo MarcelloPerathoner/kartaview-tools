@@ -82,8 +82,34 @@ def parse_atom(atoms: List[MP4Atom], mm, offset, offset_end, level):
         if atom_type == b"stco":
             parse_stco_atom(atoms, mm, offset + 8, atom_end, level + 1)
 
-        if atom_type in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
+        if atom_type == b"minf":
+            parse_minf_atom(atoms, mm, offset + 8, atom_end, level + 1)
+
+        if atom_type in (b"moov", b"trak", b"mdia", b"stbl"):
             # recurse into this ones
+            parse_atom(atoms, mm, offset + 8, atom_end, level + 1)
+
+        offset += atom_size
+
+
+def parse_minf_atom(atoms, mm, offset, offset_end, level):
+    """
+    Parse an atom of type 'minf' (media information atom).
+
+    We parse this to throw audio tracks out.
+    """
+    while offset < offset_end:
+        atom_size, atom_type = struct.unpack(">I4s", mm[offset : offset + 8])
+        atom_end = offset + atom_size
+
+        if kt.args.verbose:
+            logging.debug("%08x %s %s" % (offset, level, atom_type))
+
+        if atom_type == b"smhd":
+            # yuck! this is an audio track
+            return
+
+        if atom_type == b"stbl":
             parse_atom(atoms, mm, offset + 8, atom_end, level + 1)
 
         offset += atom_size

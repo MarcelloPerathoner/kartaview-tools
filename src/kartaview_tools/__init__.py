@@ -80,14 +80,19 @@ class ImageFileInfo:
         """Interpolated GPS fix"""
 
 
-def interpolate_coords(fixes: List[mp4.GPSFixAtom], images: List[ImageFileInfo]):
+def interpolate_coords(
+    fixes: List[mp4.GPSFixAtom],
+    images: List[ImageFileInfo],
+    max_time: datetime.timedelta,
+):
     """
     Iterate over all images and interpolate their GPS positions.
 
     The image position is interpolated using a centripetal catmull-rom spline, which needs four GPS
     fixes around the frame to interpolate.
 
-    Images and fixes must already be sorted by timestamp.
+    Images and fixes must already be sorted by timestamp.  If the time elapsed is
+    longer than max_time no interpolation is performed (GPS signal lost).
     """
     p: collections.deque[mp4.GPSFixAtom] = collections.deque(maxlen=4)
     """A sliding window of 4 fixes around the frame to interpolate.
@@ -103,10 +108,21 @@ def interpolate_coords(fixes: List[mp4.GPSFixAtom], images: List[ImageFileInfo])
 
         fix = image.gpsfix
         timestamp = fix.timestamp
+        fix.coord = None  # delete coords from eventual previous runs
 
         try:
             while len(p) < 4 or timestamp > p[2].timestamp:
                 p.append(next(fixes_iter))
+
+            assert (
+                p[0].timestamp != p[1].timestamp != p[2].timestamp != p[3].timestamp
+            ), f"{image.flic_id}:{image.frame_id} {p[0].timestamp} {p[1].timestamp} {p[2].timestamp} {p[3].timestamp}"
+            assert (
+                p[0].coord != p[1].coord != p[2].coord != p[3].coord
+            ), f"{image.flic_id}:{image.frame_id} {p[0].coord} {p[1].coord} {p[2].coord} {p[3].coord}"
+
+            if p[2].timestamp - p[1].timestamp > max_time:
+                continue
 
             # interpolate GPS position
             # need 4 fixes for catmull interpolation
@@ -293,8 +309,7 @@ def cut_sequences(
         if elapsed > max_time or dist > max_dist:
             print("Sequence of: %d images" % len(sequence))
             print(
-                "New sequence: Elapsed=%.2f/%.2f, Distance=%.2f/%.2f"
-                % (elapsed, max_time, dist, max_dist)
+                f"New sequence: {b['filename']} {b['timestamp']} Elapsed={elapsed:.2f}/{max_time:.2f}, Distance={dist:.2f}/{max_dist:.2f}"
             )
             # start a new sequence
             result.append(sequence)

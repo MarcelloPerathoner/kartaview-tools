@@ -35,12 +35,13 @@ Print all raw GPRMC statements found (also works with multiple videos):
 import argparse
 import datetime
 import glob
+import itertools
 import logging
 import mmap
 import operator
 import re
 import sys
-from typing import List, Optional
+from typing import List
 
 import piexif
 
@@ -63,27 +64,12 @@ class VideoFileInfo:
         self.frames: List[mp4.VideoFrameAtom] = []
         self.fixes: List[mp4.GPSFixAtom] = []
 
-        last: Optional[mp4.GPSFixAtom] = None
-        "the last seen GPS atom with a valid timestamp"
-
         for atom in atoms:
             atom.file_id = file_id
             if isinstance(atom, mp4.GPSFixAtom):
                 atom.frame_id = len(self.frames) - 1
                 if atom.timestamp:
-                    if last:
-                        if last.timestamp == atom.timestamp:
-                            logging.warning(
-                                f"Duplicate timestamp in GPS fix {atom.timestamp}, discarding."
-                            )
-                            continue
-                        if last.coord and atom.coord and last.coord == atom.coord:
-                            logging.warning(
-                                f"Duplicate position in GPS fix {atom.coord}, discarding."
-                            )
-                            continue
                     self.fixes.append(atom)
-                    last = atom
             if isinstance(atom, mp4.VideoFrameAtom):
                 atom.fix_id = len(self.fixes) - 1
                 self.frames.append(atom)
@@ -121,22 +107,25 @@ class VideoFileInfo:
         and after the last fix in the video file.
         """
         for image in images:
-            frame: int = image.frame_id
-            logging.debug(
-                f"Interpolating timestamp of frame {frame} in video {image.flic_id}"
-            )
-            prev_fix: int = self.frames[frame].fix_id
-            next_fix: int = prev_fix + 1
+            frame_id: int = image.frame_id
             fix = image.gpsfix
+            logging.debug(
+                f"Interpolating timestamp of frame {frame_id} in video {image.flic_id}"
+            )
+
+            prev_fix: int = (
+                self.frames[frame_id].fix_id if 0 <= frame_id < len(self.frames) else -1
+            )
+            next_fix: int = prev_fix + 1
 
             # interpolate timestamp
             if 1 <= next_fix < self.fix_cnt:
                 # need 2 fixes for linear interpolation
                 p1, p2 = self.fixes[next_fix - 1 : next_fix + 1]
 
-                if p2.frame_id == frame:
+                if p2.frame_id == frame_id:
                     fix.timestamp = p2.timestamp
-                t = (frame - p1.frame_id) / float(p2.frame_id - p1.frame_id)
+                t = (frame_id - p1.frame_id) / float(p2.frame_id - p1.frame_id)
 
                 if p1.timestamp and p2.timestamp:
                     fix.timestamp = p1.timestamp + t * (p2.timestamp - p1.timestamp)
@@ -144,7 +133,7 @@ class VideoFileInfo:
             # extrapolate timestamp
             if not fix.timestamp:
                 fix.timestamp = self.start_time + datetime.timedelta(
-                    seconds=frame / self.frame_rate
+                    seconds=frame_id / self.frame_rate
                 )
 
         logging.info("Interpolated %d image timestamps" % len(images))
@@ -203,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--frame-offset",
         default=0,
         type=int,
-        help="(experts only) offset GPS fixes by N frames (default: 0)",
+        help="(experts only) offset GPS fixes by N frames (positive values move picture positions forward) (default: 0)",
     )
     parser.add_argument(
         "--starttime",
@@ -263,35 +252,51 @@ def main():  # noqa: C901
 
     for n, video in enumerate(args.videos):
         atoms = []
-        with open(video, "r+b") as fp:
+        with open(video, "rb") as fp:
             logging.info("Processing video: %s" % video)
-            with mmap.mmap(fp.fileno(), 0) as mm:
+            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 mp4.parse_atom(atoms, mm, 0, mm.size(), 0)
         atoms = sorted(atoms, key=operator.attrgetter("offset"))
         vfi = VideoFileInfo(n, video, atoms)
         videos.append(vfi)
         all_fixes.extend(vfi.fixes)
 
-    # Throw invalid fixes out and sort for interpolation.  This is necessary because the video files
+    # Throw out fixes without coords.
+    all_fixes = filter(operator.attrgetter("coord"), all_fixes)
+
+    # Sort fixes before interpolation.  This is necessary because the video files
     # given to us may not be in cronological order.
     all_fixes = sorted(
-        filter(operator.attrgetter("coord"), all_fixes),
-        key=operator.attrgetter("timestamp"),
-    )
+        all_fixes, key=operator.attrgetter("timestamp")
+    )  # sort by timestamp
 
-    # Optionally interpolate a heading for each fix
+    # Throw out duplicate fixes
+    all_fixes = [
+        list(g)[0]
+        for k, g in itertools.groupby(all_fixes, operator.attrgetter("timestamp"))
+    ]
+    all_fixes = [
+        list(g)[0]
+        for k, g in itertools.groupby(all_fixes, operator.attrgetter("coord"))
+    ]
+
+    # Optionally interpolate a heading for each GPS fix, eg. if GPS device doesn't
+    # provide one.
     if args.interpolate_track:
         kt.interpolate_track(all_fixes)
 
     if args.mpegs:
         # NOTE: the mpegs arguments must be in the same order as the mp4 arguments
         for n, mpegs in enumerate(args.mpegs):
-            images: List[kt.ImageFileInfo] = []
             fileglobs = kt.to_glob(mpegs)
             regex = kt.to_regex(mpegs)
-            logging.info(f"Processing files: {fileglobs}")
+            filenames = sorted(glob.glob(fileglobs))
+            logging.info(
+                f"Processing {len(filenames)} files: {fileglobs} for video {videos[n].filename}"
+            )
 
-            for filename in sorted(glob.glob(fileglobs)):
+            images: List[kt.ImageFileInfo] = []
+            for filename in filenames:
                 if m := re.match(regex, filename):
                     # frame according to filename + offset
                     frame = int(m.group(1)) + args.frame_offset
@@ -305,9 +310,11 @@ def main():  # noqa: C901
             all_images.extend(images)
 
         all_images = sorted(all_images, key=operator.attrgetter("gpsfix.timestamp"))
+        # throw out duplicate images
+        # all_images = [list(g)[0] for k, g in itertools.groupby(all_images, operator.attrgetter("gpsfix.timestamp"))]
 
         # Interpolate image coordinates
-        kt.interpolate_coords(all_fixes, all_images)
+        kt.interpolate_coords(all_fixes, all_images, datetime.timedelta(seconds=10))
 
         # Patch the image files
         for image in all_images:
