@@ -55,7 +55,7 @@ Run the scripts with '-h' to see more options.
 Videos
 ======
 
-This software only supports videos produced by the Vantrue OnDas X4S dashcam.
+This software only supports videos produced by the Vantrue OnDash X4S dashcam.
 
 To split a video file into discrete images use ffmpeg.
 
