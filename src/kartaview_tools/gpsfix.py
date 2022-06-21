@@ -153,9 +153,9 @@ class GPSFix:
             mt = re.match(r"(\d\d)(\d\d)(\d\d)\.(\d+)", time)
             if md and mt:
                 return datetime.datetime(
-                    year=int(md.group(1)) + 2000,
+                    day=int(md.group(1)),
                     month=int(md.group(2)),
-                    day=int(md.group(3)),
+                    year=int(md.group(3)) + 2000,
                     hour=int(mt.group(1)),
                     minute=int(mt.group(2)),
                     second=int(mt.group(3)),

@@ -133,7 +133,9 @@ def main():  # noqa: C901
 
                 # direction
                 if f.track:
-                    f.direction = gpsfix.direction(f.track) + args.camera_yaw
+                    f.direction = (
+                        gpsfix.direction(f.track) + args.camera_yaw + 360
+                    ) % 360
 
                 gt.update(f.to_dict())
 

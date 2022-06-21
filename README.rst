@@ -2,6 +2,10 @@
  KartaView Commandline Image Uploader
 ======================================
 
+.. |PyPI version| image:: https://img.shields.io/pypi/v/kartaview-tools.svg
+   :target: https://pypi.org/project/kartaview-tools/
+
+|PyPI version|
 
 Commandline tools to upload discrete images to `KartaView <https://www.kartaview.org/>`_.
 

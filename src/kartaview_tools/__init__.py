@@ -145,8 +145,10 @@ def interpolate_coords(
                         )
                     if fix.track:
                         fix.direction = (
-                            gpsfix.rad2deg(cmath.phase(fix.track)) + args.camera_yaw
-                        )
+                            gpsfix.rad2deg(cmath.phase(fix.track))
+                            + args.camera_yaw
+                            + 360
+                        ) % 360
                 interpolated += 1
         except StopIteration:
             pass
