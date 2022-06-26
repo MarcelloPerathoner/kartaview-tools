@@ -132,8 +132,8 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:
     }
 
     def setparam(a, b):
-        if v := geotags.get(a):
-            parameters[b] = v
+        if v := geotags.get(b):
+            parameters[a] = v
 
     setparam("projectionYaw", "projection_yaw")
     setparam("heading", "heading")

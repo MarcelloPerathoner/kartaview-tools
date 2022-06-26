@@ -174,8 +174,8 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:  # noqa: 
     }
 
     def setparam(a, b):
-        if v := geotags.get(a):
-            parameters[b] = v
+        if v := geotags.get(b):
+            parameters[a] = v
 
     setparam("projectionYaw", "projection_yaw")
     setparam("heading", "heading")
@@ -210,6 +210,14 @@ def upload_image(args, sequence_id: int, geotags: Geotags) -> Geotags:  # noqa: 
             logging.debug(json.dumps(jso, ensure_ascii=False, indent=4))
         r.raise_for_status()
         geotags["photo_id"] = jso["osv"]["photo"]["id"]
+    except requests.exceptions.ReadTimeout as e:
+        raise kt.ImageUploadError(
+            f"Server timeout while uploading {filename} in sequence {sequence_id}"
+        ) from e
+    except requests.exceptions.JSONDecodeError as e:
+        raise kt.ImageUploadError(
+            f"Server returned bogus JSON while uploading {filename} in sequence {sequence_id}"
+        ) from e
     except Exception as e:
         # catch (nearly) everything and transmogrify it into an ImageUploadError exception
         status = jso["status"]

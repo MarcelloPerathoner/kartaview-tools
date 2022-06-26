@@ -26,6 +26,7 @@ Process images extracted from a backfacing cam:
 """
 
 
+import datetime
 import logging
 import re
 import uuid
@@ -69,6 +70,18 @@ def build_parser():
         type=str,
         metavar="LAT,LON,RADIUS",
         help="do not geotag inside this circle. lat, lon in decimal degrees, radius in kilometers",
+    )
+    parser.add_argument(
+        "--start-time",
+        type=str,
+        metavar="ISODATE",
+        help="do not geotag before this date and time. Format 2021-12-31T12:34:56",
+    )
+    parser.add_argument(
+        "--end-time",
+        type=str,
+        metavar="ISODATE",
+        help="do not geotag after this date and time. Format 2021-12-31T12:34:56",
     )
     parser.add_argument(
         "--min-speed",
@@ -164,6 +177,36 @@ def main():  # noqa: C901
             logging.error("geofence parameter error")
             return
         logging.info(f"Cleared {cleared} images inside geofence")
+
+    if args.start_time:
+        start_time = datetime.datetime.fromisoformat(args.start_time)
+        cleared = 0
+        for gt in geotags:
+            if (
+                "timestamp" in gt
+                and datetime.datetime.fromisoformat(gt["timestamp"]) < start_time
+            ):
+                gt.pop("lat", None)
+                gt.pop("lon", None)
+                cleared += 1
+        logging.info(f"Cleared {cleared} images before start_time")
+
+    if args.end_time:
+        end_time = datetime.datetime.fromisoformat(args.end_time)
+        cleared = 0
+        for gt in geotags:
+            if (
+                "timestamp" in gt
+                and datetime.datetime.fromisoformat(gt["timestamp"]) > end_time
+            ):
+                gt.pop("lat", None)
+                gt.pop("lon", None)
+                cleared += 1
+        logging.info(f"Cleared {cleared} images after end_time")
+
+    for gt in geotags:
+        gt.pop("tmp_sequence_id", None)
+        gt.pop("sequence_index", None)
 
     sequences = kt.cut_sequences(
         geotags, args.max_time, args.max_distance, args.max_dop, args.min_speed

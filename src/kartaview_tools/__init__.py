@@ -277,19 +277,19 @@ def cut_sequences(
 
     def filt(gt: Geotags) -> bool:
         if "timestamp" not in gt:
-            logging.info("%s has no datetime", gt["filename"])
+            logging.debug("%s has no datetime", gt["filename"])
             return False
 
         if "lat" not in gt:
-            logging.info("%s has no GPS coordinates", gt["filename"])
+            logging.debug("%s has no GPS coordinates", gt["filename"])
             return False
 
         if gt.get("dop", 0.0) > max_dop:
-            logging.info("%s exceeds max GPS DOP", gt["filename"])
+            logging.debug("%s exceeds max GPS DOP", gt["filename"])
             return False
 
         if (speed := gt.get("speed", 0.0)) < min_speed:
-            logging.info(
+            logging.debug(
                 f"{gt['filename']}s disqualified as duplicate. (Speed={speed:.2f} < {min_speed})"
             )
             return False
