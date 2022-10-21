@@ -3,3 +3,5 @@ piexif
 requests
 tqdm
 urllib3
+lxml
+python-dateutil
